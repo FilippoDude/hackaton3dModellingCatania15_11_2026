@@ -63,17 +63,17 @@ def mit_to_dexel_mesh(filepath, use_plane=2):
     for row, col, intervals in planes[use_plane]:
         for t_in, t_out in intervals:
             # Conversione da coordinate griglia a coordinate mondo
-            if use_plane == 0:      # Raggio lungo X: row=Y, col=Z
-                y0, y1 = (row + min_y) * step - half, (row + min_y) * step + half
-                z0, z1 = (col + min_z) * step - half, (col + min_z) * step + half
+            if use_plane == 0:      # Raggio lungo X: row=Z, col=Y
+                z0, z1 = (row + min_z) * step - half, (row + min_z) * step + half
+                y0, y1 = (col + min_y) * step - half, (col + min_y) * step + half
                 x0, x1 = t_in * step, t_out * step
             elif use_plane == 1:    # Raggio lungo Y: row=X, col=Z
                 x0, x1 = (row + min_x) * step - half, (row + min_x) * step + half
                 z0, z1 = (col + min_z) * step - half, (col + min_z) * step + half
                 y0, y1 = t_in * step, t_out * step
-            else:                   # Raggio lungo Z: row=X, col=Y
-                x0, x1 = (row + min_x) * step - half, (row + min_x) * step + half
-                y0, y1 = (col + min_y) * step - half, (col + min_y) * step + half
+            else:                   # Raggio lungo Z: row=Y, col=X
+                y0, y1 = (row + min_y) * step - half, (row + min_y) * step + half
+                x0, x1 = (col + min_x) * step - half, (col + min_x) * step + half
                 z0, z1 = t_in * step, t_out * step
 
             v_offset = len(all_vertices)

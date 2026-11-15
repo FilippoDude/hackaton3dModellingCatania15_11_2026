@@ -31,5 +31,11 @@ if __name__ == "__main__":
     default = os.path.normpath("../tools/mi_convert.exe")
     command = input(f"Dimmi la path del comando mi_convert (default: {default}): ").strip() or default
 
+    failed = []
     for output in outputs:
-        subprocess.run([command, output + ".mit", output + ".obj"])
+        result = subprocess.run([command, output + ".mit", output + ".obj"])
+        if result.returncode != 0 or not os.path.exists(output + ".obj"):
+            failed.append(output)
+    if failed:
+        print("mi_convert non ha generato: " + ", ".join(f"{o}.obj" for o in failed))
+        raise SystemExit(1)

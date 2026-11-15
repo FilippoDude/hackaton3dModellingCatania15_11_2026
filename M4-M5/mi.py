@@ -4,11 +4,97 @@ Struttura MI = (step, box, planes):
   step   passo della griglia (le linee stanno sui multipli interi di step, a partire da 0)
   box    [min_x, min_y, min_z, max_x, max_y, max_z] in coordinate intere di griglia
   planes planes[axis][(row, col)] = intersezioni ordinate lungo il raggio, in coordinate
-         di griglia. Asse 0: row=Y col=Z; asse 1: row=X col=Z; asse 2: row=X col=Y.
+         di griglia, con row/col relativi al minimo del box. Convenzione ciclica di
+         mi_convert: asse 0: row=Z col=Y; asse 1: row=X col=Z; asse 2: row=Y col=X.
 """
 import numpy as np
 
 from mesh import Mesh
+
+# Distanza minima (in unita' di griglia) tra un'intersezione e un nodo della griglia
+NODE_EPS = 1e-4
+
+
+def plane_axes(axis):
+    """Assi (u, v) del piano perpendicolare ad `axis`, in ordine ciclico.
+    Nel file .mit: col = u - min_u, row = v - min_v."""
+    return (axis + 1) % 3, (axis + 2) % 3
+
+
+def away_from_nodes(values):
+    """Allontana di NODE_EPS dai nodi della griglia le intersezioni che ci cadono (quasi)
+    sopra, considerando il nodo sempre FUORI dal solido: un'entrata (indice pari) va dopo
+    il nodo, un'uscita (indice dispari) prima. Cosi' il nodo risulta fuori lungo tutti e
+    tre gli assi (altrimenti mi_convert segnala 'Occupancy disagrees').
+    Gli intervalli che si annullano vengono tolti."""
+    values = np.asarray(values, dtype=float)
+    nodes = np.round(values)
+    shift = np.where(np.arange(len(values)) % 2 == 0, NODE_EPS, -NODE_EPS)
+    values = np.where(np.abs(values - nodes) < NODE_EPS, nodes + shift, values)
+    pairs = [(t_in, t_out) for t_in, t_out in zip(values[::2], values[1::2]) if t_out > t_in]
+    return one_per_edge([t for pair in pairs for t in pair])
+
+
+def one_per_edge(values):
+    """Al massimo un'intersezione per spigolo di griglia: due intersezioni consecutive
+    tra gli stessi due nodi (un intervallo o un buco piu' sottile di una cella) non
+    cambiano lo stato di nessun nodo, quindi si annullano a vicenda."""
+    kept = []
+    for t in sorted(values):
+        if kept and np.floor(kept[-1]) == np.floor(t):
+            kept.pop()
+        else:
+            kept.append(float(t))
+    return kept
+
+
+def occupancy(box, planes):
+    """Per ogni asse, matrice booleana dei nodi della griglia che risultano dentro il
+    solido secondo le linee di quell'asse. Indici relativi al minimo del box."""
+    lo, hi = np.array(box[:3]), np.array(box[3:])
+    occ = np.zeros((3, *(hi - lo)), dtype=bool)
+    for axis in range(3):
+        a, b = plane_axes(axis)
+        for (row, col), values in planes[axis].items():
+            index = [0, 0, 0]
+            index[a], index[b] = col, row
+            for t_in, t_out in zip(values[::2], values[1::2]):
+                k0 = max(int(np.ceil(t_in)) - lo[axis], 0)
+                k1 = min(int(np.floor(t_out)) - lo[axis], hi[axis] - lo[axis] - 1)
+                if k0 <= k1:
+                    index[axis] = slice(k0, k1 + 1)
+                    occ[axis][tuple(index)] = True
+    return occ
+
+
+def enforce_consistency(box, planes):
+    """Rende coerente il volume: ogni nodo deve risultare dentro (o fuori) lungo tutti e
+    tre gli assi, altrimenti mi_convert lo rifiuta ('Occupancy disagrees'). Succede ai
+    nodi quasi sulla superficie, dove gli errori numerici dei tre assi non concordano.
+    Si decide a maggioranza e sull'asse in disaccordo si sposta oltre il nodo, di
+    NODE_EPS, l'intersezione piu' vicina (o si aggiunge un intervallo minimo attorno al
+    nodo se non ce n'e' una entro una cella). Ritorna il numero di correzioni."""
+    lo = np.array(box[:3])
+    occ = occupancy(box, planes)
+    majority = occ.sum(axis=0) >= 2
+    fixes = 0
+    for node in np.argwhere((occ != majority).any(axis=0)):
+        for axis in np.flatnonzero(occ[(slice(None), *node)] != majority[tuple(node)]):
+            a, b = plane_axes(axis)
+            key = (int(node[b]), int(node[a]))
+            k = node[axis] + lo[axis]
+            values = list(planes[axis].get(key, []))
+            nearest = min(range(len(values)), key=lambda n: abs(values[n] - k), default=None)
+            if nearest is not None and abs(values[nearest] - k) < 1:
+                # Portando l'intersezione dall'altra parte del nodo cambia solo lui
+                values[nearest] = k + NODE_EPS if values[nearest] < k else k - NODE_EPS
+            else:
+                values += [k - NODE_EPS, k + NODE_EPS]
+            planes[axis][key] = one_per_edge(values)
+            if not planes[axis][key]:
+                del planes[axis][key]
+            fixes += 1
+    return fixes
 
 
 def ray_triangle_intersection(origin, direction, triangle):
@@ -78,7 +164,7 @@ def rasterize(objects, percent=10):
 
     planes = {}
     for axis in range(3):
-        a, b = [x for x in range(3) if x != axis]
+        a, b = plane_axes(axis)
         direction = np.eye(3)[axis]
         lines = planes[axis] = {}
 
@@ -100,10 +186,13 @@ def rasterize(objects, percent=10):
                     else:
                         merged.append([t_in, t_out])
 
-                if merged:
-                    lines[(i - lo[a], j - lo[b])] = [lo[axis] + t / step for pair in merged for t in pair]
+                values = away_from_nodes([lo[axis] + t / step for pair in merged for t in pair])
+                if values:
+                    lines[(j - lo[b], i - lo[a])] = values
 
-    return step, [int(x) for x in (*lo, *hi)], planes
+    box = [int(x) for x in (*lo, *hi)]
+    enforce_consistency(box, planes)
+    return step, box, planes
 
 
 def rasterize_mesh(mesh, percent=10):
@@ -119,7 +208,7 @@ def rasterize_mesh(mesh, percent=10):
 
     planes = {}
     for axis in range(3):
-        a, b = [x for x in range(3) if x != axis]
+        a, b = plane_axes(axis)
 
         hits = []  # righe (i, j, profondita', verso del triangolo rispetto al raggio)
         for p0, p1, p2 in triangles:
@@ -164,13 +253,17 @@ def rasterize_mesh(mesh, percent=10):
             # chiusa o caso degenere) l'ultima intersezione viene scartata, usare il verso
             # dei triangoli per ricostruire gli intervalli se l'avviso qui sotto compare
             odd += len(values) % 2
-            values = values[:len(values) // 2 * 2]
-            if len(values):
-                lines[(i - lo[a], j - lo[b])] = values.tolist()
+            values = away_from_nodes(values[:len(values) // 2 * 2])
+            if values:
+                lines[(j - lo[b], i - lo[a])] = values
         if odd:
             print(f"Attenzione: asse {axis}, {odd} linee con un numero dispari di intersezioni")
 
-    return step, [int(x) for x in (*lo, *hi)], planes
+    box = [int(x) for x in (*lo, *hi)]
+    fixes = enforce_consistency(box, planes)
+    if fixes:
+        print(f"Coerenza: {fixes} intersezioni corrette vicino ai nodi della griglia")
+    return step, box, planes
 
 
 def save_mit(filepath, step, box, planes):
@@ -183,7 +276,7 @@ def save_mit(filepath, step, box, planes):
         f.write("# Format per line: row column [intersection positions in grid coordinates...]\n")
         for axis in range(3):
             f.write(f"PLANE {axis}\n")
-            for (row, col), values in planes[axis].items():
+            for (row, col), values in sorted(planes[axis].items()):  # ordine lessicografico
                 f.write(f"LINE {row} {col} " + " ".join(f"{v:.9g}" for v in values) + "\n")
             f.write("END_PLANE\n\n")
 
@@ -195,9 +288,9 @@ def mi_to_mesh(step, box, planes):
     quads = []
 
     for axis in range(3):
-        a, b = [x for x in range(3) if x != axis]
+        a, b = plane_axes(axis)
         for (row, col), values in planes[axis].items():
-            i, j = row + box[a], col + box[b]
+            i, j = col + box[a], row + box[b]
             for n, value in enumerate(values):
                 point = np.zeros(3)
                 point[[axis, a, b]] = value * step, i * step, j * step
@@ -210,9 +303,8 @@ def mi_to_mesh(step, box, planes):
                     cell_points.setdefault(tuple(cell), []).append(point)
                     quad.append(tuple(cell))
 
-                # n pari = il raggio entra nel solido: normale opposta al raggio.
-                # Sull'asse 1 (row=X, col=Z) il verso di rotazione e' invertito.
-                quads.append(quad[::-1] if (n % 2 == 0) != (axis == 1) else quad)
+                # n pari = il raggio entra nel solido: normale opposta al raggio
+                quads.append(quad[::-1] if n % 2 == 0 else quad)
 
     index = {cell: n for n, cell in enumerate(cell_points)}
     vertices = [np.mean(points, axis=0) for points in cell_points.values()]
