@@ -23,3 +23,7 @@ Fondamentale fornire la path degli eseguibili forniti durante la prova: `mi_conv
 1. Aprire il file `showcaseAndTests.blend`
 
 2. Enjoy! E assaporate la nostra disperazione ;)
+
+<h1 align="center">Scena creativa finale</h1>
+
+<p align="center">La differenza tra un team che consegna le milestone e l'altro... E' la PRESENTAZIONE! (`presentationScene.blend`)</p>
