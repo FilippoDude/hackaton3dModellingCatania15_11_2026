@@ -19,8 +19,7 @@ if __name__ == "__main__":
     # ignore_boolean_ops=True mantiene entrambe le sfere nel file di output per M3
     rasterize_primitives_json(
         "./inputs/two_spheres.json",
-        "./outputs/m3_two_spheres.mit",
-        ignore_boolean_ops=True
+        "./outputs/m3_two_spheres.mit"
     )
     print("Generato m3_two_spheres.mit")
 

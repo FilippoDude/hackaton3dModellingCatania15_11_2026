@@ -4,6 +4,7 @@ from resampling_m1 import MIStructure, intersect_ray_sphere
 
 
 def extract_matrices_for_bbox(data) -> list[np.ndarray]:
+    """Estrae tutte le matrici di trasformazione presenti nel JSON."""
     matrices = []
     if isinstance(data, list):
         for item in data:
@@ -11,10 +12,10 @@ def extract_matrices_for_bbox(data) -> list[np.ndarray]:
     elif isinstance(data, dict):
         if "matrix_world" in data:
             matrices.append(np.array(data["matrix_world"], dtype=float))
-        if "target" in data:
-            matrices.extend(extract_matrices_for_bbox(data["target"]))
-        if "tool" in data:
-            matrices.extend(extract_matrices_for_bbox(data["tool"]))
+        # Supporto di sicurezza per eventuali nodi annidati senza operazioni
+        for key in ["target", "tool", "objects", "spheres"]:
+            if key in data:
+                matrices.extend(extract_matrices_for_bbox(data[key]))
     return matrices
 
 
@@ -45,64 +46,25 @@ def interval_union(intervals: list[tuple[float, float]]) -> list[tuple[float, fl
     return merged
 
 
-def interval_intersection(a_list: list[tuple[float, float]], b_list: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    res = []
-    for a_in, a_out in a_list:
-        for b_in, b_out in b_list:
-            start = max(a_in, b_in)
-            end = min(a_out, b_out)
-            if start < end - 1e-9:
-                res.append((start, end))
-    return interval_union(res)
-
-
-def interval_difference(a_list: list[tuple[float, float]], b_list: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    current = list(a_list)
-    for b_in, b_out in b_list:
-        next_step = []
-        for a_in, a_out in current:
-            if b_out <= a_in + 1e-9 or b_in >= a_out - 1e-9:
-                next_step.append((a_in, a_out))
-            else:
-                if a_in < b_in - 1e-9:
-                    next_step.append((a_in, b_in))
-                if b_out < a_out - 1e-9:
-                    next_step.append((b_out, a_out))
-        current = next_step
-    return current
-
-
-def evaluate_node_for_ray(
-    node,
-    orig_world: np.ndarray,
-    dir_world: np.ndarray,
-    inv_cache: dict,
-    ignore_boolean_ops: bool = False
-) -> list[tuple[float, float]]:
+def collect_intervals_for_ray(node, orig_world: np.ndarray, dir_world: np.ndarray, inv_cache: dict) -> list[tuple[float, float]]:
+    """Raccoglie e unisce gli intervalli di tutte le sfere/ellissoidi incontrate dal raggio."""
     if isinstance(node, list):
-        all_intervals = []
+        all_ivs = []
         for item in node:
-            all_intervals.extend(evaluate_node_for_ray(item, orig_world, dir_world, inv_cache, ignore_boolean_ops))
-        return interval_union(all_intervals)
+            all_ivs.extend(collect_intervals_for_ray(item, orig_world, dir_world, inv_cache))
+        return interval_union(all_ivs)
 
     if isinstance(node, dict):
-        if "operation" in node and "target" in node and "tool" in node:
-            target_iv = evaluate_node_for_ray(node["target"], orig_world, dir_world, inv_cache, ignore_boolean_ops)
-            tool_iv = evaluate_node_for_ray(node["tool"], orig_world, dir_world, inv_cache, ignore_boolean_ops)
+        # Se è un nodo contenente target/tool (struttura log di Blender), scansiona entrambi
+        if "target" in node or "tool" in node:
+            sub_ivs = []
+            if "target" in node:
+                sub_ivs.extend(collect_intervals_for_ray(node["target"], orig_world, dir_world, inv_cache))
+            if "tool" in node:
+                sub_ivs.extend(collect_intervals_for_ray(node["tool"], orig_world, dir_world, inv_cache))
+            return interval_union(sub_ivs)
 
-            if ignore_boolean_ops:
-                return interval_union(target_iv + tool_iv)
-
-            op = node["operation"].upper()
-            if op == "UNION":
-                return interval_union(target_iv + tool_iv)
-            elif op == "INTERSECTION":
-                return interval_intersection(target_iv, tool_iv)
-            elif op == "DIFFERENCE":
-                return interval_difference(target_iv, tool_iv)
-            else:
-                raise ValueError(f"Operazione non supportata: {op}")
-
+        # Se è una primitiva con matrix_world
         if "matrix_world" in node:
             node_id = id(node)
             if node_id not in inv_cache:
@@ -123,14 +85,16 @@ def rasterize_primitives_json(
     json_path: str,
     output_mit_path: str,
     step_percentage: float = 0.10,
-    ignore_boolean_ops: bool = False
+    fixed_step: float = None
 ) -> MIStructure:
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     matrices = extract_matrices_for_bbox(data)
     bbox_min, bbox_max = compute_scene_bbox(matrices)
-    step = np.linalg.norm(bbox_max - bbox_min) * step_percentage
+    
+    # Se vuoi forzare lo step esatto a 0.1 come nel file validato, puoi passarlo, altrimenti usa la percentuale
+    step = fixed_step if fixed_step is not None else (np.linalg.norm(bbox_max - bbox_min) * step_percentage)
 
     grid_min = np.floor(bbox_min / step).astype(int) - 1
     grid_max = np.ceil(bbox_max / step).astype(int) + 1
@@ -141,36 +105,35 @@ def rasterize_primitives_json(
 
     mi = MIStructure(step=step, box=box)
     min_x, min_y, min_z, max_x, max_y, max_z = box
-
-    # Dimensioni esatte del volume richieste da mi_convert: max - min
     nx = max_x - min_x
     ny = max_y - min_y
     nz = max_z - min_z
     inv_cache = {}
 
-    # PLANE 0 (X): row = Z (0..nz-1), col = Y (0..ny-1)
+    # PLANE 0 (X): row = Z, col = Y
     dir_x = np.array([1.0, 0.0, 0.0, 0.0])
     for row in range(nz):
         for col in range(ny):
             orig = np.array([0.0, (col + min_y) * step, (row + min_z) * step, 1.0])
-            intervals = evaluate_node_for_ray(data, orig, dir_x, inv_cache, ignore_boolean_ops)
+            intervals = collect_intervals_for_ray(data, orig, dir_x, inv_cache)
             if intervals:
                 mi.add_line(0, row, col, [val / step for pair in intervals for val in pair])
 
-    # PLANE 1 (Y): row = X (0..nx-1), col = Z (0..nz-1)
+    # PLANE 1 (Y): row = X, col = Z
     dir_y = np.array([0.0, 1.0, 0.0, 0.0])
     for row in range(nx):
         for col in range(nz):
             orig = np.array([(row + min_x) * step, 0.0, (col + min_z) * step, 1.0])
-            intervals = evaluate_node_for_ray(data, orig, dir_y, inv_cache, ignore_boolean_ops)
+            intervals = collect_intervals_for_ray(data, orig, dir_y, inv_cache)
             if intervals:
                 mi.add_line(1, row, col, [val / step for pair in intervals for val in pair])
-    # PLANE 2 (Z): row = Y (0..ny-1), col = X (0..nx-1)
+
+    # PLANE 2 (Z): row = Y, col = X
     dir_z = np.array([0.0, 0.0, 1.0, 0.0])
     for row in range(ny):
         for col in range(nx):
             orig = np.array([(col + min_x) * step, (row + min_y) * step, 0.0, 1.0])
-            intervals = evaluate_node_for_ray(data, orig, dir_z, inv_cache, ignore_boolean_ops)
+            intervals = collect_intervals_for_ray(data, orig, dir_z, inv_cache)
             if intervals:
                 mi.add_line(2, row, col, [val / step for pair in intervals for val in pair])
 
