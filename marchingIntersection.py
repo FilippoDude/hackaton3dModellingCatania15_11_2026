@@ -5,7 +5,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from mesh import Mesh
-from converttomesh import mit_to_dexel_mesh, obj_to_dexel_mesh
+from converttomesh import mit_to_dexel_mesh
 
 class SimulationConfig:
 
@@ -13,7 +13,7 @@ class SimulationConfig:
     # VOLUME DI SIMULAZIONE
     # ==============================
 
-    CUBE_SIZE = 2.0
+    CUBE_SIZE = 4.0
 
     X_MIN = -1.0
     X_MAX =  1.0
@@ -380,76 +380,63 @@ def generate_rays_test(config):
     return origins, directions
 
 
-# Generazione dei raggi
-origins, directions = generate_rays(SimulationConfig)
+def marching_intersections(mesh, step):
+    """Mesh duale: un vertice per ogni cella attraversata dalla superficie
+    (media delle intersezioni sui suoi spigoli), un quad per ogni intersezione."""
+    lo = np.floor(mesh.vertices.min(axis=0) / step).astype(int) - 1
+    hi = np.ceil(mesh.vertices.max(axis=0) / step).astype(int) + 1
+    triangles = [mesh.get_face_vertices(f) for f in range(len(mesh.faces))]
 
-imported_mesh = obj_to_dexel_mesh('./testSphrere.obj')
+    cell_points = {}  # cella (ix, iy, iz) -> intersezioni sui suoi spigoli
+    quads = []
 
-# Calcolo delle intersezioni
-hits = find_intersections(
-    origins,
-    directions,
-    meshEmptyInsideCube
-)
+    for axis in range(3):
+        a, b = (axis + 1) % 3, (axis + 2) % 3
+        direction = np.zeros(3)
+        direction[axis] = 1.0
 
-# Risultati
-print("Raggi generati:", len(origins))
-print("Raggi che colpiscono la mesh:", len(hits))
+        # Un solo raggio per linea di griglia, sui multipli interi di step
+        for i in range(lo[a], hi[a] + 1):
+            for j in range(lo[b], hi[b] + 1):
+                origin = np.zeros(3)
+                origin[[axis, a, b]] = lo[axis] * step, i * step, j * step
 
-for hit in hits[:10]:
+                results = (ray_triangle_intersection(origin, direction, t) for t in triangles)
+                # shortcut: regola pari/dispari con dedup per arrotondamento; un raggio
+                # tangente alla mesh puo' dare un conteggio dispari, passare alle
+                # intersezioni orientate (segno di a in ray_triangle_intersection) se succede
+                distances = sorted({round(r[1], 8) for r in results if r is not None})
 
-    print(
-        f"Ray {hit['ray_id']} | "
-        f"Face {hit['face_id']} | "
-        f"Point {hit['point']} | "
-        f"Distance {hit['distance']:.3f}"
-    )
+                for n, distance in enumerate(distances):
+                    point = origin + distance * direction
+                    k = int(np.floor(point[axis] / step))
+
+                    # Le 4 celle che condividono lo spigolo di griglia intersecato
+                    quad = []
+                    for da, db in ((-1, -1), (0, -1), (0, 0), (-1, 0)):
+                        cell = [0, 0, 0]
+                        cell[axis], cell[a], cell[b] = k, i + da, j + db
+                        cell_points.setdefault(tuple(cell), []).append(point)
+                        quad.append(tuple(cell))
+
+                    # n pari = il raggio entra nel solido: normale opposta al raggio
+                    quads.append(quad if n % 2 else quad[::-1])
+
+    index = {cell: n for n, cell in enumerate(cell_points)}
+    vertices = [np.mean(points, axis=0) for points in cell_points.values()]
+    faces = [[index[cell] for cell in quad] for quad in quads]
+
+    return Mesh(vertices, faces)
 
 
+if __name__ == "__main__":
+    #imported_mesh = Mesh.from_obj('./testSphrere.obj')
 
-def build_output_mesh(intersections, decimals=8):
+    ellipsoid, = Mesh.from_json('./oriented_ellipsoid.json')
+    # Come "mi_convert -p": passo in percentuale della diagonale del bounding box
+    diagonal = np.linalg.norm(ellipsoid.vertices.max(axis=0) - ellipsoid.vertices.min(axis=0))
+    step = diagonal * SimulationConfig.SAMPLING_PERCENTAGE / 100
 
-    if len(intersections) == 0:
-        return Mesh([], []), {}
-
-    unique_vertices = []
-    vertex_map = {}
-    vertex_faces = {}
-
-    for intersection in intersections:
-
-        point = np.round(
-            intersection["point"],
-            decimals=decimals
-        )
-
-        key = tuple(point)
-        face_id = intersection["face_id"]
-
-        if key not in vertex_map:
-
-            vertex_id = len(unique_vertices)
-
-            vertex_map[key] = vertex_id
-            unique_vertices.append(point)
-            vertex_faces[vertex_id] = set()
-
-        else:
-            vertex_id = vertex_map[key]
-
-        vertex_faces[vertex_id].add(face_id)
-
-    # Faces will be reconstructed here
-    output_faces = []
-
-    output_mesh = Mesh(
-        vertices=np.array(unique_vertices, dtype=float),
-        faces=output_faces
-    )
-
-    return output_mesh
-
-output_mesh = build_output_mesh(hits)
-print(output_mesh)
-output_mesh.save_obj("./final.obj")
-meshCubo.save_obj("./emptyInsideCube.obj")
+    output_mesh = marching_intersections(ellipsoid, step)
+    print("Vertici:", len(output_mesh.vertices), "Facce:", len(output_mesh.faces))
+    output_mesh.save_obj("./final.obj")
