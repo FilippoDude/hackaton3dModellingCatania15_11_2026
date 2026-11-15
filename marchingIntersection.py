@@ -28,7 +28,7 @@ class SimulationConfig:
     # RAY SAMPLING
     # ==============================
 
-    SAMPLING_RATE = 1
+    SAMPLING_RATE = 2
 
     # Numero di campioni per unità
     # di lunghezza su ciascun asse
@@ -390,7 +390,7 @@ imported_mesh = mit_to_dexel_mesh('./sphere.mit', 2)
 hits = find_intersections(
     origins,
     directions,
-    meshEmptyInsideCube
+    meshPlane
 )
 
 # Risultati
@@ -411,11 +411,11 @@ for hit in hits[:10]:
 def build_output_mesh(intersections, decimals=8):
 
     if len(intersections) == 0:
-        return Mesh([], [])
+        return Mesh([], []), {}
 
     unique_vertices = []
     vertex_map = {}
-    vertex_intersections = []
+    vertex_faces = {}
 
     for intersection in intersections:
 
@@ -425,31 +425,32 @@ def build_output_mesh(intersections, decimals=8):
         )
 
         key = tuple(point)
+        face_id = intersection["face_id"]
 
         if key not in vertex_map:
+
             vertex_id = len(unique_vertices)
 
             vertex_map[key] = vertex_id
             unique_vertices.append(point)
+            vertex_faces[vertex_id] = set()
 
         else:
             vertex_id = vertex_map[key]
 
-        vertex_intersections.append({
-            "vertex_id": vertex_id,
-            "ray_id": intersection["ray_id"],
-            "face_id": intersection["face_id"],
-            "distance": intersection["distance"]
-        })
+        vertex_faces[vertex_id].add(face_id)
+
+    # Faces will be reconstructed here
+    output_faces = []
 
     output_mesh = Mesh(
         vertices=np.array(unique_vertices, dtype=float),
-        faces=[]
+        faces=output_faces
     )
 
-    return output_mesh, vertex_intersections
+    return output_mesh
 
-output_mesh, vertex_intersections = build_output_mesh(hits)
+output_mesh = build_output_mesh(hits)
 print(output_mesh)
 output_mesh.save_obj("./final.obj")
 meshCubo.save_obj("./emptyInsideCube.obj")
