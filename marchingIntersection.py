@@ -37,7 +37,7 @@ class SimulationConfig:
     # RAY PARAMETERS
     # ==============================
 
-    RAY_LENGTH = 2.0
+    RAY_LENGTH = 5.0
 
     # Direzione iniziale
     RAY_DIRECTION = np.array([0, 0, -1])
@@ -203,7 +203,23 @@ def generate_rays(config):
     ))
 
     dirs = np.tile([-1, 0, 0], (len(points), 1))
+    origins.extend(points)
+    directions.extend(dirs)
 
+    # =================================
+    # FACE -X
+    # Raggi diretti verso +X
+    # =================================
+
+    Y, Z = np.meshgrid(y, z, indexing="ij")
+
+    points = np.column_stack((
+        np.full(Y.size, config.X_MIN),
+        Y.ravel(),
+        Z.ravel()
+    ))
+
+    dirs = np.tile([1, 0, 0], (len(points), 1))
     origins.extend(points)
     directions.extend(dirs)
 
@@ -221,7 +237,23 @@ def generate_rays(config):
     ))
 
     dirs = np.tile([0, -1, 0], (len(points), 1))
+    origins.extend(points)
+    directions.extend(dirs)
 
+    # =================================
+    # FACE -Y
+    # Raggi diretti verso +Y
+    # =================================
+
+    X, Z = np.meshgrid(x, z, indexing="ij")
+
+    points = np.column_stack((
+        X.ravel(),
+        np.full(X.size, config.Y_MIN),
+        Z.ravel()
+    ))
+
+    dirs = np.tile([0, 1, 0], (len(points), 1))
     origins.extend(points)
     directions.extend(dirs)
 
@@ -239,7 +271,23 @@ def generate_rays(config):
     ))
 
     dirs = np.tile([0, 0, -1], (len(points), 1))
+    origins.extend(points)
+    directions.extend(dirs)
 
+    # =================================
+    # FACE -Z
+    # Raggi diretti verso +Z
+    # =================================
+
+    X, Y = np.meshgrid(x, y, indexing="ij")
+
+    points = np.column_stack((
+        X.ravel(),
+        Y.ravel(),
+        np.full(X.size, config.Z_MIN)
+    ))
+
+    dirs = np.tile([0, 0, 1], (len(points), 1))
     origins.extend(points)
     directions.extend(dirs)
 
@@ -288,38 +336,49 @@ def ray_triangle_intersection(origin, direction, triangle):
     return None
 
 
-
 def find_intersections(origins, directions, mesh):
     intersections = []
 
     for ray_id, (origin, direction) in enumerate(zip(origins, directions)):
-
-        # Analizziamo tutte le facce della mesh
         for face_id in range(len(mesh.faces)):
-
             triangle = mesh.get_face_vertices(face_id)
-
-            result = ray_triangle_intersection(
-                origin, direction, triangle
-            )
-
+            result = ray_triangle_intersection(origin, direction, triangle)
+            print(result)
             if result is not None:
                 hit_point, distance = result
 
-                intersections.append({
-                    "ray_id": ray_id,
-                    "face_id": face_id,
-                    "point": hit_point,
-                    "distance": distance
-                })
+                # Verifica se il punto esiste già per questo raggio
+                already_exists = any(
+                    hit["ray_id"] == ray_id
+                    and np.allclose(hit["point"], hit_point, atol=1e-8)
+                    for hit in intersections
+                )
 
-    # Ordiniamo le intersezioni per raggio e distanza
-    intersections.sort(
-        key=lambda hit: (hit["ray_id"], hit["distance"])
-    )
+                if not already_exists:
+                    intersections.append({
+                        "ray_id": ray_id,
+                        "face_id": face_id,
+                        "point": hit_point,
+                        "distance": distance
+                    })
+
+    intersections.sort(key=lambda hit: (hit["ray_id"], hit["distance"]))
 
     return intersections
 
+def generate_rays_test(config):
+
+    origins = np.array([
+        [config.X_MAX, 0, 0],  # +X
+        [config.X_MIN, 0, 0]   # -X
+    ], dtype=float)
+
+    directions = np.array([
+        [-1, 0, 0],  # Towards -X
+        [1, 0, 0]    # Towards +X
+    ], dtype=float)
+
+    return origins, directions
 
 
 # Generazione dei raggi
@@ -331,7 +390,7 @@ imported_mesh = mit_to_dexel_mesh('./sphere.mit', 2)
 hits = find_intersections(
     origins,
     directions,
-    imported_mesh
+    meshEmptyInsideCube
 )
 
 # Risultati
@@ -351,32 +410,46 @@ for hit in hits[:10]:
 
 def build_output_mesh(intersections, decimals=8):
 
-    # Estraiamo i punti di intersezione
-    points = [
-        intersection["point"]
-        for intersection in intersections
-    ]
-
-    # Se non ci sono intersezioni
-    if len(points) == 0:
+    if len(intersections) == 0:
         return Mesh([], [])
 
-    # Convertiamo in array NumPy
-    points = np.array(points, dtype=float)
+    unique_vertices = []
+    vertex_map = {}
+    vertex_intersections = []
 
-    # Eliminiamo i punti duplicati
-    unique_vertices = np.unique(
-        np.round(points, decimals=decimals),
-        axis=0
-    )
+    for intersection in intersections:
 
-    # Creiamo una mesh senza facce
+        point = np.round(
+            intersection["point"],
+            decimals=decimals
+        )
+
+        key = tuple(point)
+
+        if key not in vertex_map:
+            vertex_id = len(unique_vertices)
+
+            vertex_map[key] = vertex_id
+            unique_vertices.append(point)
+
+        else:
+            vertex_id = vertex_map[key]
+
+        vertex_intersections.append({
+            "vertex_id": vertex_id,
+            "ray_id": intersection["ray_id"],
+            "face_id": intersection["face_id"],
+            "distance": intersection["distance"]
+        })
+
     output_mesh = Mesh(
-        vertices=unique_vertices,
+        vertices=np.array(unique_vertices, dtype=float),
         faces=[]
     )
 
-    return output_mesh
+    return output_mesh, vertex_intersections
 
-
-build_output_mesh(hits)
+output_mesh, vertex_intersections = build_output_mesh(hits)
+print(output_mesh)
+output_mesh.save_obj("./final.obj")
+meshCubo.save_obj("./emptyInsideCube.obj")
