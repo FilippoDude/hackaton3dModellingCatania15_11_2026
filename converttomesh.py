@@ -1,5 +1,6 @@
 import numpy as np
-from marchingIntersection import Mesh
+from mesh import Mesh
+
 
 def parse_mit_file(filepath):
     """Legge un file .mit e restituisce metadati e dizionario dei piani."""

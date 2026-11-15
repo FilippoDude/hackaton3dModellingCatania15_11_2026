@@ -4,6 +4,8 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
+from mesh import Mesh
+from converttomesh import mit_to_dexel_mesh
 
 class SimulationConfig:
 
@@ -48,25 +50,6 @@ class SimulationConfig:
     SHOW_HITS = True
     SHOW_MESH = True
 
-
-
-# =====================================
-# 1. DEFINIZIONE DELLA MESH
-# =====================================
-class Mesh:
-
-    def __init__(self, vertices, faces):
-
-        self.vertices = np.array(vertices, dtype=float)
-        self.faces = np.array(faces, dtype=int)
-
-    def get_face_vertices(self, face_index):
-
-        # Recupera gli indici dei vertici della faccia
-        indices = self.faces[face_index]
-
-        # Recupera le coordinate XYZ
-        return self.vertices[indices]
 
 
 # =================================
@@ -342,11 +325,13 @@ def find_intersections(origins, directions, mesh):
 # Generazione dei raggi
 origins, directions = generate_rays(SimulationConfig)
 
+imported_mesh = mit_to_dexel_mesh('./sphere.mit', 2)
+
 # Calcolo delle intersezioni
 hits = find_intersections(
     origins,
     directions,
-    meshEmptyInsideCube
+    imported_mesh
 )
 
 # Risultati
@@ -392,3 +377,6 @@ def build_output_mesh(intersections, decimals=8):
     )
 
     return output_mesh
+
+
+build_output_mesh(hits)
