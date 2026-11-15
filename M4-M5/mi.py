@@ -14,6 +14,8 @@ from mesh import Mesh
 # Spostamento (in unita' di griglia) di cio' che cade su un nodo o su una linea della
 # griglia: come mi_convert, che porta in avanti di ~0.0011 le facce del cubo sui nodi
 NODE_EPS = 1.1e-3
+# Traslazione (in unita' di griglia) della mesh prima di rasterizzarla, vedi rasterize_mesh
+MESH_SHIFT = 1e-6
 
 
 def plane_axes(axis):
@@ -218,9 +220,11 @@ def rasterize_mesh(mesh, percent=10, step=None, box=None):
     if box is None:
         box = grid_box(mesh.vertices, step)
     lo, hi = np.array(box[:3]), np.array(box[3:])
-    # Coordinate di griglia; i vertici su nodi/linee (es. facce di un cubo allineate alla
-    # griglia) vengono spostati di NODE_EPS per non avere raggi radenti alle facce
-    triangles = off_grid(mesh.vertices[np.array(mesh.faces)] / step).tolist()
+    # Coordinate di griglia, con tutta la mesh traslata di MESH_SHIFT: vertici, spigoli e
+    # facce allineati alla griglia (es. le facce di un cubo) non stanno piu' esattamente
+    # sui raggi. Una traslazione rigida non ribalta nessun triangolo, mentre spostare i
+    # singoli vertici rovina i triangoli quasi paralleli al raggio.
+    triangles = (mesh.vertices[np.array(mesh.faces)] / step + MESH_SHIFT).tolist()
     eps = 1e-9
 
     planes = {}
@@ -264,17 +268,22 @@ def rasterize_mesh(mesh, percent=10, step=None, box=None):
         hits = hits[keep]
 
         line_ids, starts = np.unique(hits[:, :2], axis=0, return_index=True)
-        odd = 0
-        for (i, j), values in zip(line_ids.astype(int), np.split(hits[:, 2], starts[1:])):
-            # shortcut: regola pari/dispari; su una linea con conteggio dispari (mesh non
-            # chiusa o caso degenere) l'ultima intersezione viene scartata, usare il verso
-            # dei triangoli per ricostruire gli intervalli se l'avviso qui sotto compare
-            odd += len(values) % 2
-            values = away_from_nodes(values[:len(values) // 2 * 2])
+        open_lines = 0
+        for (i, j), line in zip(line_ids.astype(int), np.split(hits[:, 2:], starts[1:])):
+            # Intersezioni orientate (come mi_convert): con assi (a, b, axis) ciclici l'area
+            # proiettata e' la componente della normale lungo il raggio, quindi un triangolo
+            # con area > 0 e' un'uscita. Dentro = winding number diverso da 0: un punto
+            # contato due volte (vertice o spigolo sul raggio) non rompe la linea, come
+            # succederebbe con la regola pari/dispari.
+            winding = np.cumsum(-line[:, 1])
+            inside = winding != 0
+            changes = inside != np.concatenate(([False], inside[:-1]))
+            open_lines += winding[-1] != 0
+            values = away_from_nodes(line[changes, 0][:changes.sum() // 2 * 2])
             if values:
                 lines[(j - lo[b], i - lo[a])] = values
-        if odd:
-            print(f"Attenzione: asse {axis}, {odd} linee con un numero dispari di intersezioni")
+        if open_lines:
+            print(f"Attenzione: asse {axis}, {open_lines} linee non si chiudono (mesh aperta?)")
 
     fixes = enforce_consistency(box, planes)
     if fixes:

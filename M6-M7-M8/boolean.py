@@ -52,49 +52,83 @@ def boolean_planes(target, tool, operation, box):
     return planes
 
 
-def load_object(obj, folder):
-    """Mesh <name>.obj con matrix_world applicata (obj_snapshot va ignorato)."""
+def matrix_of(obj):
     matrix = np.array(obj["matrix_world"], dtype=float)
     if matrix.shape != (4, 4):
         raise ValueError(f"{obj['name']}: matrix_world deve essere una matrice 4x4")
-    mesh = Mesh.from_obj(os.path.join(folder, obj["name"] + ".obj"))
-    mesh.vertices = mesh.vertices @ matrix[:3, :3].T + matrix[:3, 3]
-    return mesh
+    return matrix
 
 
-def run_operations(json_path, step):
+def transformed(mesh, matrix):
+    """Copia della mesh con la matrice 4x4 applicata ai vertici."""
+    with np.errstate(all="ignore"):  # numpy 2.0 su macOS: falsi avvisi 'divide by zero in matmul'
+        return Mesh(mesh.vertices @ matrix[:3, :3].T + matrix[:3, 3], mesh.faces)
+
+
+class SceneObject:
+    """Un oggetto della scena di Blender: la sua mesh in coordinate locali, la
+    trasformazione corrente e il volume MI in coordinate mondo."""
+
+    def __init__(self, mesh, matrix):
+        self.mesh = mesh          # coordinate locali
+        self.matrix = matrix      # matrix_world con cui e' stato calcolato il volume
+        self.planes = None
+        self.modified = False     # il volume e' cambiato rispetto a self.mesh
+
+
+def run_operations(json_path, step, extract_mesh=None):
     """Esegue in ordine le operazioni del JSON e restituisce (step, box, planes) del
-    target dell'ultima operazione. Ogni oggetto e' tenuto per nome: la prima volta si
-    rasterizza la sua mesh, poi si riusa il volume (gia' modificato dalle operazioni)
-    finche' la trasformazione resta la stessa."""
+    target dell'ultima operazione, seguendo la logica Blender -> MI delle slide:
+    - la prima volta che un oggetto compare si legge <name>.obj (obj_snapshot va
+      ignorato), si applica matrix_world e si crea il volume;
+    - se ricompare con la stessa trasformazione si riusa il volume;
+    - se la trasformazione e' cambiata si ricalcola il volume: dalla mesh originale se
+      l'oggetto non e' stato modificato, altrimenti prima si estrae la mesh dal volume
+      con extract_mesh(step, box, planes) -> Mesh (coordinate mondo)."""
     folder = os.path.dirname(json_path)
     with open(json_path, encoding="utf-8") as f:
         operations = json.load(f)
 
-    # Griglia comune: deve contenere tutti gli oggetti in tutte le loro posizioni
-    meshes = {}
+    objects = {}
     for op in operations:
         for role in ("target", "tool"):
             obj = op[role]
-            key = (obj["name"], json.dumps(obj["matrix_world"]))
-            if key not in meshes:
-                meshes[key] = load_object(obj, folder)
-    box = grid_box(np.vstack([m.vertices for m in meshes.values()]), step)
+            if obj["name"] not in objects:
+                mesh = Mesh.from_obj(os.path.join(folder, obj["name"] + ".obj"))
+                objects[obj["name"]] = SceneObject(mesh, matrix_of(obj))
 
-    volumes = {}  # nome -> (matrix_world, planes)
+    # Griglia comune: deve contenere ogni oggetto in ogni posizione in cui compare
+    corners = []
+    for op in operations:
+        for role in ("target", "tool"):
+            obj = op[role]
+            corners.append(transformed(objects[obj["name"]].mesh, matrix_of(obj)).vertices)
+    box = grid_box(np.vstack(corners), step)
+
     for op in operations:
         planes = {}
         for role in ("target", "tool"):
-            obj = op[role]
-            matrix = json.dumps(obj["matrix_world"])
-            if obj["name"] in volumes and volumes[obj["name"]][0] == matrix:
-                planes[role] = volumes[obj["name"]][1]
-            else:
-                # Prima volta (o trasformazione cambiata): rasterizza la mesh originale.
-                # Per M9 servira' estrarre la mesh dal volume se l'oggetto era gia' stato modificato.
-                planes[role] = rasterize_mesh(meshes[(obj["name"], matrix)], step=step, box=box)[2]
-        result = boolean_planes(planes["target"], planes["tool"], op["operation"].upper(), box)
-        volumes[op["target"]["name"]] = (json.dumps(op["target"]["matrix_world"]), result)
+            obj = objects[op[role]["name"]]
+            matrix = matrix_of(op[role])
+            if obj.planes is not None and np.array_equal(obj.matrix, matrix):
+                planes[role] = obj.planes
+                continue
+            if obj.modified:
+                if extract_mesh is None:
+                    raise ValueError(f"{op[role]['name']} e' stato modificato e poi spostato: "
+                                     "serve extract_mesh per estrarne la mesh dal volume")
+                # Mesh del volume attuale, riportata in coordinate locali
+                world = extract_mesh(step, box, obj.planes)
+                obj.mesh = transformed(world, np.linalg.inv(obj.matrix))
+                obj.modified = False
+                print(f"  {op[role]['name']}: mesh estratta dal volume ({len(world.faces)} facce)")
+            obj.matrix = matrix
+            obj.planes = rasterize_mesh(transformed(obj.mesh, matrix), step=step, box=box)[2]
+            planes[role] = obj.planes
+
+        target = objects[op["target"]["name"]]
+        target.planes = boolean_planes(planes["target"], planes["tool"], op["operation"].upper(), box)
+        target.modified = True
         print(f"Operazione {op.get('id')}: {op['target']['name']} {op['operation']} {op['tool']['name']}")
 
-    return step, box, volumes[operations[-1]["target"]["name"]][1]
+    return step, box, objects[operations[-1]["target"]["name"]].planes
