@@ -2,10 +2,15 @@
 
 
 
+import os
+
+os.chdir(os.path.dirname(os.path.abspath(__file__)))  # percorsi relativi a questa cartella
+
 import numpy as np
 import matplotlib.pyplot as plt
 from mesh import Mesh
 from converttomesh import mit_to_dexel_mesh
+from mi import ray_triangle_intersection, mesh_object, rasterize, mi_to_mesh
 
 class SimulationConfig:
 
@@ -294,48 +299,6 @@ def generate_rays(config):
     return np.array(origins), np.array(directions)
 
 
-def ray_triangle_intersection(origin, direction, triangle):
-
-    v0, v1, v2 = triangle
-
-    epsilon = 1e-8
-
-    edge1 = v1 - v0
-    edge2 = v2 - v0
-
-    h = np.cross(direction, edge2)
-    a = np.dot(edge1, h)
-
-    # Raggio parallelo al triangolo
-    if abs(a) < epsilon:
-        return None
-
-    f = 1.0 / a
-    s = origin - v0
-
-    u = f * np.dot(s, h)
-
-    if u < 0.0 or u > 1.0:
-        return None
-
-    q = np.cross(s, edge1)
-    v = f * np.dot(direction, q)
-
-    if v < 0.0 or u + v > 1.0:
-        return None
-
-    t = f * np.dot(edge2, q)
-
-    # Consideriamo solo intersezioni davanti al raggio
-    if t > epsilon:
-
-        hit_point = origin + t * direction
-
-        return hit_point, t
-
-    return None
-
-
 def find_intersections(origins, directions, mesh):
     intersections = []
 
@@ -380,63 +343,10 @@ def generate_rays_test(config):
     return origins, directions
 
 
-def marching_intersections(mesh, step):
-    """Mesh duale: un vertice per ogni cella attraversata dalla superficie
-    (media delle intersezioni sui suoi spigoli), un quad per ogni intersezione."""
-    lo = np.floor(mesh.vertices.min(axis=0) / step).astype(int) - 1
-    hi = np.ceil(mesh.vertices.max(axis=0) / step).astype(int) + 1
-    triangles = [mesh.get_face_vertices(f) for f in range(len(mesh.faces))]
-
-    cell_points = {}  # cella (ix, iy, iz) -> intersezioni sui suoi spigoli
-    quads = []
-
-    for axis in range(3):
-        a, b = (axis + 1) % 3, (axis + 2) % 3
-        direction = np.zeros(3)
-        direction[axis] = 1.0
-
-        # Un solo raggio per linea di griglia, sui multipli interi di step
-        for i in range(lo[a], hi[a] + 1):
-            for j in range(lo[b], hi[b] + 1):
-                origin = np.zeros(3)
-                origin[[axis, a, b]] = lo[axis] * step, i * step, j * step
-
-                results = (ray_triangle_intersection(origin, direction, t) for t in triangles)
-                # shortcut: regola pari/dispari con dedup per arrotondamento; un raggio
-                # tangente alla mesh puo' dare un conteggio dispari, passare alle
-                # intersezioni orientate (segno di a in ray_triangle_intersection) se succede
-                distances = sorted({round(r[1], 8) for r in results if r is not None})
-
-                for n, distance in enumerate(distances):
-                    point = origin + distance * direction
-                    k = int(np.floor(point[axis] / step))
-
-                    # Le 4 celle che condividono lo spigolo di griglia intersecato
-                    quad = []
-                    for da, db in ((-1, -1), (0, -1), (0, 0), (-1, 0)):
-                        cell = [0, 0, 0]
-                        cell[axis], cell[a], cell[b] = k, i + da, j + db
-                        cell_points.setdefault(tuple(cell), []).append(point)
-                        quad.append(tuple(cell))
-
-                    # n pari = il raggio entra nel solido: normale opposta al raggio
-                    quads.append(quad if n % 2 else quad[::-1])
-
-    index = {cell: n for n, cell in enumerate(cell_points)}
-    vertices = [np.mean(points, axis=0) for points in cell_points.values()]
-    faces = [[index[cell] for cell in quad] for quad in quads]
-
-    return Mesh(vertices, faces)
-
-
 if __name__ == "__main__":
-    #imported_mesh = Mesh.from_obj('./testSphrere.obj')
+    imported_mesh = Mesh.from_obj('./inputs/testSphrere.obj')
 
-    ellipsoid, = Mesh.from_json('./oriented_ellipsoid.json')
-    # Come "mi_convert -p": passo in percentuale della diagonale del bounding box
-    diagonal = np.linalg.norm(ellipsoid.vertices.max(axis=0) - ellipsoid.vertices.min(axis=0))
-    step = diagonal * SimulationConfig.SAMPLING_PERCENTAGE / 100
-
-    output_mesh = marching_intersections(ellipsoid, step)
+    output_mesh = mi_to_mesh(*rasterize([mesh_object(imported_mesh)], SimulationConfig.SAMPLING_PERCENTAGE))
     print("Vertici:", len(output_mesh.vertices), "Facce:", len(output_mesh.faces))
-    output_mesh.save_obj("./final.obj")
+    os.makedirs("./outputs", exist_ok=True)
+    output_mesh.save_obj("./outputs/final.obj")
