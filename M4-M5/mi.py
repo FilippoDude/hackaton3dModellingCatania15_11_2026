@@ -11,8 +11,9 @@ import numpy as np
 
 from mesh import Mesh
 
-# Distanza minima (in unita' di griglia) tra un'intersezione e un nodo della griglia
-NODE_EPS = 1e-4
+# Spostamento (in unita' di griglia) di cio' che cade su un nodo o su una linea della
+# griglia: come mi_convert, che porta in avanti di ~0.0011 le facce del cubo sui nodi
+NODE_EPS = 1.1e-3
 
 
 def plane_axes(axis):
@@ -21,16 +22,20 @@ def plane_axes(axis):
     return (axis + 1) % 3, (axis + 2) % 3
 
 
-def away_from_nodes(values):
-    """Allontana di NODE_EPS dai nodi della griglia le intersezioni che ci cadono (quasi)
-    sopra, considerando il nodo sempre FUORI dal solido: un'entrata (indice pari) va dopo
-    il nodo, un'uscita (indice dispari) prima. Cosi' il nodo risulta fuori lungo tutti e
-    tre gli assi (altrimenti mi_convert segnala 'Occupancy disagrees').
-    Gli intervalli che si annullano vengono tolti."""
+def off_grid(values):
+    """Porta a intero + NODE_EPS i valori (in coordinate di griglia) che distano meno di
+    NODE_EPS da un intero, cioe' sposta in avanti cio' che cade su un nodo o una linea."""
     values = np.asarray(values, dtype=float)
     nodes = np.round(values)
-    shift = np.where(np.arange(len(values)) % 2 == 0, NODE_EPS, -NODE_EPS)
-    values = np.where(np.abs(values - nodes) < NODE_EPS, nodes + shift, values)
+    return np.where(np.abs(values - nodes) < NODE_EPS, nodes + NODE_EPS, values)
+
+
+def away_from_nodes(values):
+    """Sposta in avanti di NODE_EPS lungo il raggio le intersezioni che cadono (quasi) su
+    un nodo della griglia, cosi' nessuna coincide con un nodo. Gli intervalli che si
+    annullano vengono tolti; i casi in cui i tre assi non concordano sullo stato del nodo
+    li sistema poi enforce_consistency."""
+    values = off_grid(values)
     pairs = [(t_in, t_out) for t_in, t_out in zip(values[::2], values[1::2]) if t_out > t_in]
     return one_per_edge([t for pair in pairs for t in pair])
 
@@ -195,15 +200,27 @@ def rasterize(objects, percent=10):
     return step, box, planes
 
 
-def rasterize_mesh(mesh, percent=10):
+def grid_box(points, step):
+    """Box di griglia (min inclusi, max esclusi) che contiene i punti con un nodo di margine."""
+    points = off_grid(np.asarray(points, dtype=float) / step)
+    lo = np.floor(points.min(axis=0)).astype(int) - 1
+    hi = np.ceil(points.max(axis=0)).astype(int) + 1
+    return [int(x) for x in (*lo, *hi)]
+
+
+def rasterize_mesh(mesh, percent=10, step=None, box=None):
     """Crea la struttura MI di una mesh chiusa di triangoli rasterizzando ogni triangolo
     sulle linee di griglia che attraversano la sua proiezione.
-    Il passo e' percent% della diagonale del bounding box."""
-    lo, hi = mesh.vertices.min(axis=0), mesh.vertices.max(axis=0)
-    step = np.linalg.norm(hi - lo) * percent / 100
-    lo = np.floor(lo / step).astype(int) - 1
-    hi = np.ceil(hi / step).astype(int) + 1
-    triangles = (mesh.vertices[np.array(mesh.faces)] / step).tolist()  # coordinate di griglia
+    Il passo e' percent% della diagonale del bounding box, oppure `step` se dato; `box`
+    impone una griglia gia' decisa (serve per combinare piu' oggetti)."""
+    if step is None:
+        step = np.linalg.norm(np.ptp(mesh.vertices, axis=0)) * percent / 100
+    if box is None:
+        box = grid_box(mesh.vertices, step)
+    lo, hi = np.array(box[:3]), np.array(box[3:])
+    # Coordinate di griglia; i vertici su nodi/linee (es. facce di un cubo allineate alla
+    # griglia) vengono spostati di NODE_EPS per non avere raggi radenti alle facce
+    triangles = off_grid(mesh.vertices[np.array(mesh.faces)] / step).tolist()
     eps = 1e-9
 
     planes = {}
@@ -259,7 +276,6 @@ def rasterize_mesh(mesh, percent=10):
         if odd:
             print(f"Attenzione: asse {axis}, {odd} linee con un numero dispari di intersezioni")
 
-    box = [int(x) for x in (*lo, *hi)]
     fixes = enforce_consistency(box, planes)
     if fixes:
         print(f"Coerenza: {fixes} intersezioni corrette vicino ai nodi della griglia")
