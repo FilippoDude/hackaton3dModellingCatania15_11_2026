@@ -41,15 +41,12 @@ class Mesh:
                         v_idx = int(p.split("/")[0])
                         idx.append(v_idx - 1 if v_idx > 0 else len(vertices) + v_idx)
                     
-                    # Triangolazione a ventaglio nel caso ci siano poligoni (es. quad)
                     for i in range(1, len(idx) - 1):
                         faces.append([idx[0], idx[i], idx[i + 1]])
         return cls(vertices=vertices, faces=faces)
 
     @classmethod
     def from_json(cls, filepath: str) -> "list[Mesh]":
-        """Carica un JSON [{"name", "matrix_world"}, ...]: per ogni oggetto legge
-        <name>.obj dalla stessa cartella del JSON e gli applica matrix_world."""
         with open(filepath, "r", encoding="utf-8") as f:
             objects = json.load(f)
 

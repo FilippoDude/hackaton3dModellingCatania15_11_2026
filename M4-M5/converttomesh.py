@@ -41,7 +41,6 @@ def mit_to_dexel_mesh(filepath, use_plane=2):
     """
     Converte un file .mit nella struttura Mesh generando un parallelepipedo
     (8 vertici, 12 facce triangolari) per ogni intervallo [t_in, t_out].
-    Non richiede librerie esterne oltre a NumPy.
     """
     step, box, planes = parse_mit_file(filepath)
     min_x, min_y, min_z, _, _, _ = box
@@ -89,9 +88,8 @@ def mit_to_dexel_mesh(filepath, use_plane=2):
 
 def mit_to_smooth_mesh(filepath, supersample=2):
     """
-    Ricostruisce una superficie chiusa e continua (triangolata via Marching Cubes)
+    Ricostruisce una superficie chiusa e continua
     combinando tutti e 3 i piani ortogonali del file .mit per massima precisione.
-    Richiede scikit-image (`pip install scikit-image`).
     """
     from skimage.measure import marching_cubes
 
