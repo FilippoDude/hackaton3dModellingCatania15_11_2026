@@ -26,4 +26,4 @@ Fondamentale fornire la path degli eseguibili forniti durante la prova: `mi_conv
 
 <h1 align="center">Scena creativa finale</h1>
 
-<p align="center">La differenza tra un team che consegna le milestone e l'altro... E' la PRESENTAZIONE! (`presentationScene.blend`)</p>
+<p align="center">La differenza tra un team che consegna le milestone e l'altro... E' la PRESENTAZIONE! (<code>presentationScene.blend</code>)</p>
