@@ -139,3 +139,51 @@ def mit_to_smooth_mesh(filepath, supersample=2):
     verts, faces, _, _ = marching_cubes(volume, level=1.5, spacing=(sub_step, sub_step, sub_step))
     verts += origin
     return Mesh(vertices=verts, faces=faces)
+
+
+def obj_to_dexel_mesh(filepath):
+    """
+    Converte un file .obj nella struttura Mesh.
+    Supporta vertici (v) e facce (f) triangolari o poligonali.
+    Non richiede librerie esterne oltre a NumPy.
+    """
+    all_vertices = []
+    all_faces = []
+
+    with open(filepath, "r") as file:
+        for line in file:
+            line = line.strip()
+
+            if not line or line.startswith("#"):
+                continue
+
+            parts = line.split()
+
+            if parts[0] == "v":
+                # Coordinate del vertice
+                vertex = [float(value) for value in parts[1:4]]
+                all_vertices.append(vertex)
+
+            elif parts[0] == "f":
+                # Indici dei vertici della faccia
+                face = []
+
+                for value in parts[1:]:
+                    # Gestisce anche formati come 1/2/3 o 1//3
+                    vertex_index = int(value.split("/")[0])
+
+                    # Gli indici OBJ partono da 1.
+                    # Gli indici negativi sono relativi alla fine della lista.
+                    if vertex_index > 0:
+                        vertex_index -= 1
+                    else:
+                        vertex_index = len(all_vertices) + vertex_index
+
+                    face.append(vertex_index)
+
+                all_faces.append(face)
+
+    return Mesh(
+        vertices=np.array(all_vertices, dtype=float),
+        faces=np.array(all_faces, dtype=object)
+    )

@@ -5,7 +5,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from mesh import Mesh
-from converttomesh import mit_to_dexel_mesh
+from converttomesh import mit_to_dexel_mesh, obj_to_dexel_mesh
 
 class SimulationConfig:
 
@@ -28,7 +28,7 @@ class SimulationConfig:
     # RAY SAMPLING
     # ==============================
 
-    SAMPLING_RATE = 2
+    SAMPLING_PERCENTAGE = 10
 
     # Numero di campioni per unità
     # di lunghezza su ciascun asse
@@ -181,8 +181,8 @@ def generate_rays(config):
     directions = []
 
     # Numero di campioni per faccia
-    n = int(config.CUBE_SIZE * config.SAMPLING_RATE) + 1
-    print('RIGA DI RAY PER FACCIA: ' + str(n))
+    step_size = config.CUBE_SIZE * (config.SAMPLING_PERCENTAGE / 100)
+    n = int(round(config.CUBE_SIZE / step_size)) + 1
 
     # Coordinate della griglia
     x = np.linspace(config.X_MIN, config.X_MAX, n)
@@ -343,7 +343,6 @@ def find_intersections(origins, directions, mesh):
         for face_id in range(len(mesh.faces)):
             triangle = mesh.get_face_vertices(face_id)
             result = ray_triangle_intersection(origin, direction, triangle)
-            print(result)
             if result is not None:
                 hit_point, distance = result
 
@@ -384,13 +383,13 @@ def generate_rays_test(config):
 # Generazione dei raggi
 origins, directions = generate_rays(SimulationConfig)
 
-imported_mesh = mit_to_dexel_mesh('./sphere.mit', 2)
+imported_mesh = obj_to_dexel_mesh('./testSphrere.obj')
 
 # Calcolo delle intersezioni
 hits = find_intersections(
     origins,
     directions,
-    meshPlane
+    meshEmptyInsideCube
 )
 
 # Risultati
